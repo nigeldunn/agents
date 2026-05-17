@@ -1,0 +1,119 @@
+name: Build and deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to deploy (defaults to commit SHA)'
+        required: false
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ap-southeast-2
+  AWS_ACCOUNT_ID: '339712920881'
+  DEPLOY_ROLE_ARN: arn:aws:iam::339712920881:role/agents-github-actions-deploy
+  MOCK_AGENT_REPO: agents/mock-agent-http
+  BRIDGE_REPO: agents/agentcore-bridge
+  VPC_ID: vpc-0da5ae4e455363f5f
+  ORCHESTRATOR_SG_ID: sg-09a7ab0628444bc36
+  CLUSTER_NAME: orch-cluster
+  CREATE_VPC_ENDPOINTS: 'true'
+
+jobs:
+  build-and-push:
+    name: Build and push images
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      image_tag: ${{ steps.tag.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve image tag
+        id: tag
+        run: |
+          TAG="${{ github.event.inputs.image_tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="${GITHUB_SHA::12}"
+          fi
+          echo "image_tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push mock-agent-http
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/mock-agent-http/Dockerfile
+          platforms: linux/arm64
+          provenance: false
+          push: true
+          tags: |
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.MOCK_AGENT_REPO }}:${{ steps.tag.outputs.image_tag }}
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.MOCK_AGENT_REPO }}:latest
+          cache-from: type=gha,scope=mock-agent-http
+          cache-to: type=gha,scope=mock-agent-http,mode=max
+
+      - name: Build and push agentcore-bridge
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/agentcore-bridge/Dockerfile
+          platforms: linux/arm64
+          provenance: false
+          push: true
+          tags: |
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.BRIDGE_REPO }}:${{ steps.tag.outputs.image_tag }}
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.BRIDGE_REPO }}:latest
+          cache-from: type=gha,scope=agentcore-bridge
+          cache-to: type=gha,scope=agentcore-bridge,mode=max
+
+  deploy:
+    name: cdk deploy AgentcoreStack
+    needs: build-and-push
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: infra/agentcore-cdk/package-lock.json
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install CDK deps
+        working-directory: infra/agentcore-cdk
+        run: npm ci
+
+      - name: Deploy AgentcoreStack
+        working-directory: infra/agentcore-cdk
+        env:
+          CDK_DEFAULT_ACCOUNT: ${{ env.AWS_ACCOUNT_ID }}
+          CDK_DEFAULT_REGION: ${{ env.AWS_REGION }}
+        run: |
+          npx cdk deploy AgentcoreStack \
+            --require-approval never \
+            -c vpcId=${{ env.VPC_ID }} \
+            -c orchestratorSgId=${{ env.ORCHESTRATOR_SG_ID }} \
+            -c clusterName=${{ env.CLUSTER_NAME }} \
+            -c createVpcEndpoints=${{ env.CREATE_VPC_ENDPOINTS }} \
+            -c imageTag=${{ needs.build-and-push.outputs.image_tag }}

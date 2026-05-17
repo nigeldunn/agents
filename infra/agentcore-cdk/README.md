@@ -1,58 +1,79 @@
 # AgentCore CDK
 
-Single-stack CDK app that deploys the agent workspace via Bedrock
+Two CDK stacks that together deploy the agent workspace via Bedrock
 AgentCore Runtime, fronted by a Rust HTTP bridge running on Fargate in
-the orchestrator's existing VPC.
+the orchestrator's existing VPC. Container images are built and pushed
+by GitHub Actions; both stacks consume them from ECR by tag.
 
-## Topology
+## Stacks
 
-```
-Orchestrator (Fargate, existing) → Bridge (Fargate, this stack) → AgentCore Runtime → mock-agent-http container
-                                            │
-                                            └── DynamoDB (status, TTL'd)
-```
+### `AgentcoreBootstrapStack` (deployed once, manually)
 
-The bridge speaks the engine contract (`POST /run/{agent_type}`,
-`GET /status/...`, `GET /healthz`) and translates each `/run` into a
-`bedrock-agentcore:InvokeAgentRuntime` SDK call. Responses are cached in
-DynamoDB so `/status` is a point lookup.
+One-shot. Run locally with admin AWS creds before any CI runs. Creates:
 
-## Resources provisioned
+- The GitHub Actions OIDC provider.
+- IAM role `agents-github-actions-deploy`, trust-scoped to
+  `repo:nigeldunn/agents:ref:refs/heads/main`. Permissions: ECR push to
+  the two repos below, `sts:AssumeRole` on the CDK bootstrap roles, and
+  `cloudformation:DescribeStacks` for read-back.
+- ECR repos `agents/mock-agent-http` and `agents/agentcore-bridge` with
+  image scanning on push and a 20-image lifecycle policy.
 
-- `AWS::BedrockAgentCore::Runtime` hosting the `mock-agent-http` image
-  (linux/arm64, PUBLIC network, HTTP protocol).
-- ECS Fargate service + internal ALB for the bridge, in private subnets.
+### `AgentcoreStack` (deployed by CI on every push to `main`)
+
+- `AWS::BedrockAgentCore::Runtime` pointing at
+  `agents/mock-agent-http:<imageTag>` in ECR (linux/arm64, PUBLIC, HTTP).
+- ECS Fargate service running `agents/agentcore-bridge:<imageTag>` in
+  private isolated subnets, behind an internal ALB.
 - DynamoDB status table (PK `pk = "{agent_type}#{action_id}"`, TTL'd).
 - Secrets Manager secret `agents/bearer-token`, injected into the bridge
-  task as `AGENTS_BEARER_TOKEN`. The AgentCore container does **not**
-  receive the token — AgentCore Runtime does not forward arbitrary
-  headers to the container, so the bridge is the only auth boundary.
-- IAM: AgentCore execution role (ECR pull, CloudWatch logs, X-Ray,
-  metrics). Bridge task role scoped to `InvokeAgentRuntime` on the
-  runtime ARN, DynamoDB R/W on the status table, and `GetSecretValue`
-  on the bearer secret.
+  task. **Not** injected into the AgentCore container — that container
+  trusts AgentCore's IAM boundary.
+- VPC interface endpoints for AgentCore data plane, Secrets Manager,
+  ECR (api + dkr), CloudWatch Logs, and gateway endpoints for DynamoDB +
+  S3, since the private subnets are isolated (no NAT).
 
-## Deploy
+## Initial setup (one-shot)
 
 ```bash
 cd infra/agentcore-cdk
 npm install
-npx cdk bootstrap aws://$CDK_DEFAULT_ACCOUNT/$CDK_DEFAULT_REGION
-npx cdk deploy \
-  -c vpcId=vpc-xxxx \
-  -c orchestratorSgId=sg-yyyy \
-  -c clusterName=optional-existing-cluster \
-  -c createVpcEndpoints=true   # only if VPC has neither NAT nor endpoints
+npx cdk bootstrap aws://<account>/<region>     # if not already bootstrapped
+npx cdk deploy AgentcoreBootstrapStack
 ```
 
-Required context: `vpcId`, `orchestratorSgId`.
-Optional context: `clusterName`, `createVpcEndpoints`.
+The bootstrap stack outputs `DeployRoleArn`. If it differs from the
+hard-coded value in `.github/workflows/deploy.yml`, update the workflow.
 
-If you set `createVpcEndpoints=true`, the stack adds interface endpoints
-for `bedrock-agentcore`, Secrets Manager, ECR (api + dkr), and Logs, plus
-gateway endpoints for DynamoDB and S3.
+## Day-to-day: push to main
+
+```bash
+git push origin main
+```
+
+The workflow:
+
+1. Builds `mock-agent-http` and `agentcore-bridge` images on a native
+   `ubuntu-24.04-arm` runner with Buildx (no QEMU).
+2. Tags both with the 12-char commit SHA plus `latest`, pushes to ECR.
+3. Runs `cdk deploy AgentcoreStack -c imageTag=<sha>`.
+
+The hard-coded values in the workflow:
+
+| Variable | Value |
+| --- | --- |
+| `AWS_REGION` | `ap-southeast-2` |
+| `AWS_ACCOUNT_ID` | `339712920881` |
+| `VPC_ID` | `vpc-0da5ae4e455363f5f` |
+| `ORCHESTRATOR_SG_ID` | `sg-09a7ab0628444bc36` |
+| `CLUSTER_NAME` | `orch-cluster` |
+| `CREATE_VPC_ENDPOINTS` | `true` |
+
+Override the deployed image tag with `workflow_dispatch` + `image_tag`.
 
 ## Outputs
+
+After `AgentcoreStack` deploys, four CloudFormation outputs:
 
 - `BridgeAlbDns` — internal ALB DNS for the orchestrator to call.
 - `AgentCoreRuntimeArn` — the runtime invoked by the bridge.
@@ -66,8 +87,7 @@ Point the orchestrator at the bridge with:
 base_url = "http://<BridgeAlbDns>"
 ```
 
-and give it the `BearerSecretArn` value (either as
-`AGENTS_BEARER_TOKEN` or via the same Secrets Manager reference).
+and give it the secret value (or read it from the same ARN).
 
 ## Verify after deploy
 
@@ -80,6 +100,6 @@ curl -sS -X POST http://<BridgeAlbDns>/run/triage \
   -d '{"action_id":"smoke-1","payload":{"ticket":{"source":"manual","id":"ENG-1"},"repo":{"owner":"o","name":"r"}}}'
 ```
 
-Expect `{"status":"finished","output":{...},"cost_cents":50}`. Repeat the
-call to confirm idempotent replay from DynamoDB, or
+Expect `{"status":"finished","output":{...},"cost_cents":50}`. Repeat
+the call to confirm idempotent replay from DynamoDB, or
 `GET /status/triage/smoke-1` to read the cached body directly.

@@ -1,4 +1,3 @@
-import * as path from 'path';
 import {
   Stack,
   StackProps,
@@ -6,7 +5,7 @@ import {
   RemovalPolicy,
   Duration,
   aws_ec2 as ec2,
-  aws_ecr_assets as ecr_assets,
+  aws_ecr as ecr,
   aws_ecs as ecs,
   aws_elasticloadbalancingv2 as elbv2,
   aws_iam as iam,
@@ -21,13 +20,13 @@ export interface AgentcoreStackProps extends StackProps {
   readonly orchestratorSgId: string;
   readonly clusterName?: string;
   readonly createVpcEndpoints?: boolean;
+  /** Image tag the GitHub Actions workflow pushed to both ECR repos. */
+  readonly imageTag: string;
 }
 
 export class AgentcoreStack extends Stack {
   constructor(scope: Construct, id: string, props: AgentcoreStackProps) {
     super(scope, id, props);
-
-    const repoRoot = path.resolve(__dirname, '..', '..', '..');
 
     const vpc = ec2.Vpc.fromLookup(this, 'Vpc', { vpcId: props.vpcId });
 
@@ -38,17 +37,18 @@ export class AgentcoreStack extends Stack {
       { mutable: false },
     );
 
-    const mockAgentImage = new ecr_assets.DockerImageAsset(this, 'MockAgentImage', {
-      directory: repoRoot,
-      file: 'apps/mock-agent-http/Dockerfile',
-      platform: ecr_assets.Platform.LINUX_ARM64,
-    });
+    const mockAgentRepo = ecr.Repository.fromRepositoryName(
+      this,
+      'MockAgentRepo',
+      'agents/mock-agent-http',
+    );
+    const bridgeRepo = ecr.Repository.fromRepositoryName(
+      this,
+      'BridgeRepo',
+      'agents/agentcore-bridge',
+    );
 
-    const bridgeImage = new ecr_assets.DockerImageAsset(this, 'BridgeImage', {
-      directory: repoRoot,
-      file: 'apps/agentcore-bridge/Dockerfile',
-      platform: ecr_assets.Platform.LINUX_ARM64,
-    });
+    const mockAgentImageUri = `${mockAgentRepo.repositoryUri}:${props.imageTag}`;
 
     const bearerSecret = new secretsmanager.Secret(this, 'BearerToken', {
       secretName: 'agents/bearer-token',
@@ -71,7 +71,7 @@ export class AgentcoreStack extends Stack {
       assumedBy: new iam.ServicePrincipal('bedrock-agentcore.amazonaws.com'),
       description: 'Execution role for the AgentCore Runtime hosting mock-agent-http',
     });
-    mockAgentImage.repository.grantPull(agentCoreRole);
+    mockAgentRepo.grantPull(agentCoreRole);
     agentCoreRole.addToPolicy(new iam.PolicyStatement({
       actions: ['ecr:GetAuthorizationToken'],
       resources: ['*'],
@@ -101,7 +101,7 @@ export class AgentcoreStack extends Stack {
       roleArn: agentCoreRole.roleArn,
       agentRuntimeArtifact: {
         containerConfiguration: {
-          containerUri: mockAgentImage.imageUri,
+          containerUri: mockAgentImageUri,
         },
       },
       networkConfiguration: {
@@ -139,7 +139,7 @@ export class AgentcoreStack extends Stack {
     bearerSecret.grantRead(taskDef.taskRole);
 
     taskDef.addContainer('bridge', {
-      image: ecs.ContainerImage.fromDockerImageAsset(bridgeImage),
+      image: ecs.ContainerImage.fromEcrRepository(bridgeRepo, props.imageTag),
       logging: ecs.LogDrivers.awsLogs({
         streamPrefix: 'agentcore-bridge',
       }),
@@ -183,7 +183,7 @@ export class AgentcoreStack extends Stack {
       taskDefinition: taskDef,
       desiredCount: 2,
       securityGroups: [bridgeSg],
-      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
       assignPublicIp: false,
       enableExecuteCommand: true,
       minHealthyPercent: 50,
@@ -194,7 +194,7 @@ export class AgentcoreStack extends Stack {
     const alb = new elbv2.ApplicationLoadBalancer(this, 'BridgeAlb', {
       vpc,
       internetFacing: false,
-      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
       securityGroup: albSg,
     });
 

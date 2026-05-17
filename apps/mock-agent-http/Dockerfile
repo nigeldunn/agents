@@ -6,7 +6,7 @@ WORKDIR /workspace
 
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
-COPY apps/mock-agent-http ./apps/mock-agent-http
+COPY apps ./apps
 
 RUN cargo build --release -p mock-agent-http \
     && mkdir -p /out \
