@@ -1,0 +1,19 @@
+target/
+**/target/
+.git/
+.gitignore
+.github/
+.claude/
+.codex/
+.agents/
+
+# CDK artefacts — must be excluded or DockerImageAsset recurses on itself
+infra/agentcore-cdk/cdk.out/
+infra/agentcore-cdk/node_modules/
+infra/agentcore-cdk/cdk.context.json
+infra/agentcore-cdk/*.js
+infra/agentcore-cdk/*.d.ts
+
+LICENSE
+README.md
+**/.DS_Store

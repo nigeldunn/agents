@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "apps/agentcore-bridge",
     "apps/mock-agent-http",
     "crates/agent-contract",
     "crates/agent-runtime",
@@ -27,3 +28,6 @@ tower = "0.5.2"
 tower-http = "0.6.6"
 tracing = "0.1.43"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt", "json"] }
+aws-config = { version = "1.5", features = ["behavior-version-latest"] }
+aws-sdk-bedrockagentcore = "1"
+aws-sdk-dynamodb = "1"
