@@ -39,11 +39,24 @@ One-shot. Run locally with admin AWS creds before any CI runs. Creates:
 cd infra/agentcore-cdk
 npm install
 npx cdk bootstrap aws://<account>/<region>     # if not already bootstrapped
-npx cdk deploy AgentcoreBootstrapStack
+
+# If the GitHub Actions OIDC provider already exists in this account
+# (another project may have created it), import it instead of failing:
+EXISTING_OIDC=$(aws iam list-open-id-connect-providers \
+  --query "OpenIDConnectProviderList[?contains(Arn,'token.actions.githubusercontent.com')].Arn" \
+  --output text)
+
+npx cdk deploy AgentcoreBootstrapStack \
+  ${EXISTING_OIDC:+-c existingOidcProviderArn=$EXISTING_OIDC}
 ```
 
 The bootstrap stack outputs `DeployRoleArn`. If it differs from the
 hard-coded value in `.github/workflows/deploy.yml`, update the workflow.
+
+The ECR repositories `agents/mock-agent-http` and `agents/agentcore-bridge`
+are imported by name, not owned by the stack. Image scanning + lifecycle
+policy are set out-of-band with `aws ecr put-image-scanning-configuration`
+and `aws ecr put-lifecycle-policy`.
 
 ## Day-to-day: push to main
 

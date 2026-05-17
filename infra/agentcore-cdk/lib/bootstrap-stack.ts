@@ -35,24 +35,34 @@ export class AgentcoreBootstrapStack extends Stack {
 
     const githubRef = props.githubRef ?? 'refs/heads/main';
 
-    const mockAgentRepo = new ecr.Repository(this, 'MockAgentRepo', {
-      repositoryName: 'agents/mock-agent-http',
-      imageScanOnPush: true,
-      lifecycleRules: [{ maxImageCount: 20 }],
-      removalPolicy: RemovalPolicy.RETAIN,
-    });
+    // ECR repos are kept out of stack ownership so they survive stack
+    // deletion. CDK manages references only. Apply image scanning + lifecycle
+    // policy out-of-band (see README).
+    const mockAgentRepo = ecr.Repository.fromRepositoryName(
+      this,
+      'MockAgentRepo',
+      'agents/mock-agent-http',
+    );
+    const bridgeRepo = ecr.Repository.fromRepositoryName(
+      this,
+      'BridgeRepo',
+      'agents/agentcore-bridge',
+    );
 
-    const bridgeRepo = new ecr.Repository(this, 'BridgeRepo', {
-      repositoryName: 'agents/agentcore-bridge',
-      imageScanOnPush: true,
-      lifecycleRules: [{ maxImageCount: 20 }],
-      removalPolicy: RemovalPolicy.RETAIN,
-    });
-
-    const oidcProvider = new iam.OpenIdConnectProvider(this, 'GithubOidc', {
-      url: 'https://token.actions.githubusercontent.com',
-      clientIds: ['sts.amazonaws.com'],
-    });
+    // The GitHub Actions OIDC provider is account-wide. If another stack has
+    // already created it, set `existingOidcProviderArn` (context) to that ARN
+    // to import it instead of failing.
+    const existingOidcArn = this.node.tryGetContext('existingOidcProviderArn');
+    const oidcProvider: iam.IOpenIdConnectProvider = existingOidcArn
+      ? iam.OpenIdConnectProvider.fromOpenIdConnectProviderArn(
+          this,
+          'GithubOidc',
+          existingOidcArn,
+        )
+      : new iam.OpenIdConnectProvider(this, 'GithubOidc', {
+          url: 'https://token.actions.githubusercontent.com',
+          clientIds: ['sts.amazonaws.com'],
+        });
 
     const deployRole = new iam.Role(this, 'GithubActionsDeployRole', {
       roleName: 'agents-github-actions-deploy',
