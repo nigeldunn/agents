@@ -214,30 +214,39 @@ export class AgentcoreStack extends Stack {
     });
 
     if (props.createVpcEndpoints) {
-      vpc.addInterfaceEndpoint('BedrockAgentCoreEndpoint', {
+      // Serialise interface-endpoint creation with explicit dependencies.
+      // AWS occasionally returns "conflicting DNS domain" errors when more
+      // than one privateDnsEnabled endpoint is being provisioned in parallel
+      // in the same VPC.
+      const bedrockEp = vpc.addInterfaceEndpoint('BedrockAgentCoreEndpoint', {
         service: new ec2.InterfaceVpcEndpointService(
           `com.amazonaws.${this.region}.bedrock-agentcore`,
           443,
         ),
         privateDnsEnabled: true,
       });
+      const secretsEp = vpc.addInterfaceEndpoint('SecretsManagerEndpoint', {
+        service: ec2.InterfaceVpcEndpointAwsService.SECRETS_MANAGER,
+      });
+      secretsEp.node.addDependency(bedrockEp);
+      const ecrApiEp = vpc.addInterfaceEndpoint('EcrApiEndpoint', {
+        service: ec2.InterfaceVpcEndpointAwsService.ECR,
+      });
+      ecrApiEp.node.addDependency(secretsEp);
+      const ecrDkrEp = vpc.addInterfaceEndpoint('EcrDkrEndpoint', {
+        service: ec2.InterfaceVpcEndpointAwsService.ECR_DOCKER,
+      });
+      ecrDkrEp.node.addDependency(ecrApiEp);
+      const logsEp = vpc.addInterfaceEndpoint('LogsEndpoint', {
+        service: ec2.InterfaceVpcEndpointAwsService.CLOUDWATCH_LOGS,
+      });
+      logsEp.node.addDependency(ecrDkrEp);
+
       vpc.addGatewayEndpoint('DynamoDbEndpoint', {
         service: ec2.GatewayVpcEndpointAwsService.DYNAMODB,
       });
-      vpc.addInterfaceEndpoint('SecretsManagerEndpoint', {
-        service: ec2.InterfaceVpcEndpointAwsService.SECRETS_MANAGER,
-      });
-      vpc.addInterfaceEndpoint('EcrApiEndpoint', {
-        service: ec2.InterfaceVpcEndpointAwsService.ECR,
-      });
-      vpc.addInterfaceEndpoint('EcrDkrEndpoint', {
-        service: ec2.InterfaceVpcEndpointAwsService.ECR_DOCKER,
-      });
       vpc.addGatewayEndpoint('S3Endpoint', {
         service: ec2.GatewayVpcEndpointAwsService.S3,
-      });
-      vpc.addInterfaceEndpoint('LogsEndpoint', {
-        service: ec2.InterfaceVpcEndpointAwsService.CLOUDWATCH_LOGS,
       });
     }
 
