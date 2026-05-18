@@ -163,7 +163,7 @@ export class AgentcoreStack extends Stack {
     bridgeSg.addIngressRule(
       orchestratorSg,
       ec2.Port.tcp(8080),
-      'Orchestrator → bridge',
+      'Orchestrator to bridge',
     );
 
     const albSg = new ec2.SecurityGroup(this, 'BridgeAlbSg', {
@@ -174,9 +174,9 @@ export class AgentcoreStack extends Stack {
     albSg.addIngressRule(
       orchestratorSg,
       ec2.Port.tcp(80),
-      'Orchestrator → ALB',
+      'Orchestrator to ALB',
     );
-    bridgeSg.addIngressRule(albSg, ec2.Port.tcp(8080), 'ALB → bridge');
+    bridgeSg.addIngressRule(albSg, ec2.Port.tcp(8080), 'ALB to bridge');
 
     const service = new ecs.FargateService(this, 'BridgeService', {
       cluster,
