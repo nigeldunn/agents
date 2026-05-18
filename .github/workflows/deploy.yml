@@ -102,7 +102,7 @@ jobs:
 
       - name: Install CDK deps
         working-directory: infra/agentcore-cdk
-        run: npm ci
+        run: npm install --no-audit --no-fund
 
       - name: Deploy AgentcoreStack
         working-directory: infra/agentcore-cdk
